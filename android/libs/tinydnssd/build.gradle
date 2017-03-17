@@ -1,0 +1,129 @@
+apply plugin: 'com.android.library'
+apply plugin: 'maven'
+apply plugin: 'signing'
+
+android {
+    compileSdkVersion 23
+    buildToolsVersion "23.0.2"
+
+    defaultConfig {
+        minSdkVersion 16
+        targetSdkVersion 23
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    repositories {
+        maven { url 'http://repo1.maven.org/maven2' }
+    }
+}
+
+def BUILD_NUMBER = System.getenv("BUILD_NUMBER") ?: "dev"
+
+/** Gets the version name from the latest Git tag. */
+def getVersionName = {
+  return "1.2.${BUILD_NUMBER}"
+}
+def VERSION_NAME = getVersionName()
+
+group = 'com.youview'
+version = VERSION_NAME
+
+android.libraryVariants.all { variant ->
+    Jar task = project.tasks.create "jar${name.capitalize()}", Jar
+    task.archiveName "tinydnssd-${VERSION_NAME}-${name}.jar"
+    task.dependsOn variant.javaCompile
+    task.from variant.javaCompile.destinationDir
+    artifacts.add('archives', task);
+}
+
+dependencies {
+    testCompile 'junit:junit:4.12'
+
+    androidTestCompile 'junit:junit:4.12'
+    androidTestCompile 'com.google.dexmaker:dexmaker-mockito:1.2'
+}
+
+task sourcesJar(type: Jar) {
+    from android.sourceSets.main.java.srcDirs
+    classifier = 'sources'
+    archiveName "tinydnssd-${VERSION_NAME}-sources.jar"
+}
+
+task javadoc(type: Javadoc) {
+    source = android.sourceSets.main.java.srcDirs
+    classpath += project.files(android.getBootClasspath().join(File.pathSeparator))
+}
+
+task javadocJar(type: Jar, dependsOn: javadoc) {
+    classifier = 'javadoc'
+    from javadoc.destinationDir
+    archiveName "tinydnssd-${VERSION_NAME}-javadoc.jar"
+}
+
+artifacts {
+    archives javadocJar
+    archives sourcesJar
+}
+
+if (!hasProperty('sonatypeUsername')) {
+    project.ext.sonatypeUsername = null
+}
+
+if (!hasProperty('sonatypePassword')) {
+    project.ext.sonatypePassword = null
+}
+
+signing {
+    required { gradle.taskGraph.hasTask("uploadArchives") }
+    sign configurations.archives
+}
+
+uploadArchives {
+    repositories {
+        mavenDeployer {
+            beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
+
+            repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                authentication(userName: sonatypeUsername, password: sonatypePassword)
+            }
+
+            // upload the .jar, not the .aar (or .aar.asc etc)
+            filter { artifact, file -> !file.getName().contains(".aar") }
+
+            pom.project {
+                artifactId "tinydnssd"
+                name 'TinyDNSSD'
+                packaging 'jar'
+                description 'A Multicast DNS com.youview.tinydnssd.Service Discovery library for Android and Java applications'
+                url 'https://github.com/youviewtv/tinydnssd'
+
+                scm {
+                    url 'scm:git@github.com/youviewtv/tinydnssd'
+                    connection 'scm:git@github.com/youviewtv/tinydnssd.git'
+                    developerConnection 'scm:git@github.com/youviewtv/tinydnssd.git'
+                }
+
+                licenses {
+                    license {
+                        name 'The MIT License'
+                        url 'https://opensource.org/licenses/MIT'
+                        distribution 'repo'
+                    }
+                }
+
+                developers {
+                    developer {
+                        name 'Steve Lilly'
+                        email 'steve.lilly@youview.com'
+                    }
+                }
+            }
+        }
+    }
+}
