@@ -16,6 +16,8 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 import com.youview.tinydnssd.MDNSDiscover;
 
 import java.io.IOException;
+import java.net.SocketTimeoutException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -42,10 +44,12 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
     public static final String KEY_SERVICE_ADDRESSES = "addresses";
     public static final String KEY_SERVICE_TXT = "txt";
 
-    public static final int RESOLVE_TIMEOUT = 0; // Will wait forever
+    public static final int RESOLVE_TIMEOUT = 5000;
+    public static final int MAX_ATTEMPTS_TO_RESOLVE = 2;
 
     protected NsdManager mNsdManager;
     protected NsdManager.DiscoveryListener mDiscoveryListener;
+    private final Map<NsdServiceInfo, Integer> resolutionAttempsByService = new HashMap<>();
 
     public ZeroconfModule(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -94,8 +98,11 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
 
                 sendEvent(getReactApplicationContext(), EVENT_FOUND, service);
 
-                String name = serviceInfo.getServiceName() + "." + serviceInfo.getServiceType() + "local";
-                resolve(name);
+                synchronized (resolutionAttempsByService) {
+                    resolutionAttempsByService.put(serviceInfo, 1);
+                }
+
+                resolve(serviceInfo);
             }
 
             @Override
@@ -110,7 +117,22 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
         mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, mDiscoveryListener);
     }
 
-    protected void resolve(String serviceName) {
+    protected void resolve(NsdServiceInfo serviceInfo) {
+        Integer attempts;
+        String serviceName = serviceInfo.getServiceName() + "." + serviceInfo.getServiceType() + "local";
+
+        synchronized (resolutionAttempsByService) {
+            attempts = resolutionAttempsByService.get(serviceInfo);
+            resolutionAttempsByService.put(serviceInfo, attempts + 1);
+        }
+
+        if ((attempts == null) || (attempts > MAX_ATTEMPTS_TO_RESOLVE)) {
+            sendEvent(getReactApplicationContext(), EVENT_ERROR,
+                    "Resolving service failed with message: Timeout " + serviceName );
+
+            return;
+        }
+
         WritableMap service = new WritableNativeMap();
 
         try {
@@ -134,6 +156,8 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
             service.putArray(KEY_SERVICE_ADDRESSES, addresses);
 
             sendEvent(getReactApplicationContext(), EVENT_RESOLVE, service);
+        } catch (SocketTimeoutException timeoutException) {
+            resolve(serviceInfo);
         } catch (IOException e) {
             String error = "Resolving service failed with message: " + e;
             sendEvent(getReactApplicationContext(), EVENT_ERROR, error);
