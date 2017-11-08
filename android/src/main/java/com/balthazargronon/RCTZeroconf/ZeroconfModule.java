@@ -1,5 +1,6 @@
 package com.balthazargronon.RCTZeroconf;
 
+import android.annotation.TargetApi;
 import android.content.Context;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
@@ -28,6 +29,7 @@ import javax.annotation.Nullable;
  * Created by Jeremy White on 8/1/2016.
  * Copyright © 2016 Balthazar Gronon MIT
  */
+@TargetApi(16)
 public class ZeroconfModule extends ReactContextBaseJavaModule {
 
     public static final String EVENT_START = "RNZeroconfStart";
@@ -47,9 +49,9 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
     public static final int RESOLVE_TIMEOUT = 5000;
     public static final int MAX_ATTEMPTS_TO_RESOLVE = 2;
 
-    protected NsdManager mNsdManager;
-    protected NsdManager.DiscoveryListener mDiscoveryListener;
     private final Map<NsdServiceInfo, Integer> resolutionAttempsByService = new HashMap<>();
+    private boolean started;
+    private boolean trasitioning;
 
     public ZeroconfModule(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -62,59 +64,30 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void scan(String type, String protocol, String domain) {
-        if (mNsdManager == null) {
-            mNsdManager = (NsdManager) getReactApplicationContext().getSystemService(Context.NSD_SERVICE);
+        if (started) {
+            return;
         }
 
-        this.stop();
+        if (!trasitioning) {
+            discoverServices(String.format("_%s._%s.", type, protocol), NsdManager.PROTOCOL_DNS_SD, mDiscoveryListener);
+            trasitioning = true;
+        }
 
-        mDiscoveryListener = new NsdManager.DiscoveryListener() {
-            @Override
-            public void onStartDiscoveryFailed(String serviceType, int errorCode) {
-                String error = "Starting service discovery failed with code: " + errorCode;
-                sendEvent(getReactApplicationContext(), EVENT_ERROR, error);
-            }
+        started = true;
+    }
 
-            @Override
-            public void onStopDiscoveryFailed(String serviceType, int errorCode) {
-                String error = "Stopping service discovery failed with code: " + errorCode;
-                sendEvent(getReactApplicationContext(), EVENT_ERROR, error);
-            }
+    @ReactMethod
+    public void stop() {
+        if (!started) {
+            return;
+        }
 
-            @Override
-            public void onDiscoveryStarted(String serviceType) {
-                sendEvent(getReactApplicationContext(), EVENT_START, null);
-            }
+        if (!trasitioning) {
+            stopServiceDiscovery(mDiscoveryListener);
+            trasitioning = true;
+        }
 
-            @Override
-            public void onDiscoveryStopped(String serviceType) {
-                sendEvent(getReactApplicationContext(), EVENT_STOP, null);
-            }
-
-            @Override
-            public void onServiceFound(NsdServiceInfo serviceInfo) {
-                WritableMap service = new WritableNativeMap();
-                service.putString(KEY_SERVICE_NAME, serviceInfo.getServiceName());
-
-                sendEvent(getReactApplicationContext(), EVENT_FOUND, service);
-
-                synchronized (resolutionAttempsByService) {
-                    resolutionAttempsByService.put(serviceInfo, 1);
-                }
-
-                resolve(serviceInfo);
-            }
-
-            @Override
-            public void onServiceLost(NsdServiceInfo serviceInfo) {
-                WritableMap service = new WritableNativeMap();
-                service.putString(KEY_SERVICE_NAME, serviceInfo.getServiceName());
-                sendEvent(getReactApplicationContext(), EVENT_REMOVE, service);
-            }
-        };
-
-        String serviceType = String.format("_%s._%s.", type, protocol);
-        mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, mDiscoveryListener);
+        started = false;
     }
 
     protected void resolve(NsdServiceInfo serviceInfo) {
@@ -155,7 +128,11 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
 
             service.putArray(KEY_SERVICE_ADDRESSES, addresses);
 
-            sendEvent(getReactApplicationContext(), EVENT_RESOLVE, service);
+            synchronized (ZeroconfModule.this) {
+                if (started) {
+                    sendEvent(getReactApplicationContext(), EVENT_RESOLVE, service);
+                }
+            }
         } catch (SocketTimeoutException timeoutException) {
             resolve(serviceInfo);
         } catch (IOException e) {
@@ -164,13 +141,77 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
         }
     }
 
-    @ReactMethod
-    public void stop() {
-        if (mDiscoveryListener != null) {
-            mNsdManager.stopServiceDiscovery(mDiscoveryListener);
+    NsdManager.DiscoveryListener mDiscoveryListener = new NsdManager.DiscoveryListener() {
+        @Override
+        public void onStartDiscoveryFailed(String serviceType, int errorCode) {
+            String error = "Starting service discovery failed with code: " + errorCode;
+            sendEvent(getReactApplicationContext(), EVENT_ERROR, error);
         }
 
-        mDiscoveryListener = null;
+        @Override
+        public void onStopDiscoveryFailed(String serviceType, int errorCode) {
+            String error = "Stopping service discovery failed with code: " + errorCode;
+            sendEvent(getReactApplicationContext(), EVENT_ERROR, error);
+        }
+
+        @Override
+        public void onDiscoveryStarted(String serviceType) {
+            synchronized (ZeroconfModule.this) {
+                if (!started) {
+                    stop();
+                } else {
+                    sendEvent(getReactApplicationContext(), EVENT_START, null);
+                    trasitioning = false;
+                }
+            }
+        }
+
+        @Override
+        public void onDiscoveryStopped(String serviceType) {
+            if (started) {
+                discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, this);
+            } else {
+                sendEvent(getReactApplicationContext(), EVENT_STOP, null);
+                trasitioning = false;
+            }
+        }
+
+        @Override
+        public void onServiceFound(NsdServiceInfo serviceInfo) {
+            synchronized (ZeroconfModule.this) {
+                if (started) {
+                    WritableMap service = new WritableNativeMap();
+                    service.putString(KEY_SERVICE_NAME, serviceInfo.getServiceName());
+
+                    sendEvent(getReactApplicationContext(), EVENT_FOUND, service);
+
+                    synchronized (resolutionAttempsByService) {
+                        resolutionAttempsByService.put(serviceInfo, 1);
+                    }
+
+                    resolve(serviceInfo);
+                }
+            }
+        }
+
+        @Override
+        public void onServiceLost(NsdServiceInfo serviceInfo) {
+            synchronized (ZeroconfModule.this) {
+                if (started) {
+                    WritableMap service = new WritableNativeMap();
+                    service.putString(KEY_SERVICE_NAME, serviceInfo.getServiceName());
+                    sendEvent(getReactApplicationContext(), EVENT_REMOVE, service);
+                }
+            }
+        }
+    };
+
+    protected void discoverServices(String serviceType, int protocol, NsdManager.DiscoveryListener listener) {
+        ((NsdManager) getReactApplicationContext().getSystemService(Context.NSD_SERVICE)).discoverServices(serviceType, protocol, listener);
+    }
+
+    protected void stopServiceDiscovery(NsdManager.DiscoveryListener listener) {
+        ((NsdManager) getReactApplicationContext().getSystemService(Context.NSD_SERVICE)).stopServiceDiscovery(listener);
     }
 
     protected void sendEvent(ReactContext reactContext,
