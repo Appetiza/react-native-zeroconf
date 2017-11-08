@@ -128,7 +128,11 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
 
             service.putArray(KEY_SERVICE_ADDRESSES, addresses);
 
-            sendEvent(getReactApplicationContext(), EVENT_RESOLVE, service);
+            synchronized (ZeroconfModule.this) {
+                if (started) {
+                    sendEvent(getReactApplicationContext(), EVENT_RESOLVE, service);
+                }
+            }
         } catch (SocketTimeoutException timeoutException) {
             resolve(serviceInfo);
         } catch (IOException e) {
@@ -157,7 +161,7 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
                     stop();
                 } else {
                     sendEvent(getReactApplicationContext(), EVENT_START, null);
-                    trasitioning = true;
+                    trasitioning = false;
                 }
             }
         }
@@ -168,7 +172,7 @@ public class ZeroconfModule extends ReactContextBaseJavaModule {
                 discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, this);
             } else {
                 sendEvent(getReactApplicationContext(), EVENT_STOP, null);
-                trasitioning = true;
+                trasitioning = false;
             }
         }
 
